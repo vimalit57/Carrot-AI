@@ -1,0 +1,30 @@
+First create the folder name it as AI 
+check whether the python version is 3.10
+then create a virutual environment based on your python version 
+Then install the given packages in the AI folder in VS code terminal 
+# ── AI Brain ──────────────────────
+pip install openai==0.28.1
+
+# ── Speech Input ──────────────────
+pip install SpeechRecognition
+pip install pyttsx3
+pip install pyaudio
+
+# ── Vision ────────────────────────
+pip install opencv-python
+pip install mediapipe
+pip install face_recognition
+
+# ── Automation ────────────────────
+pip install pyautogui
+pip install psutil
+pip install pycaw
+pip install pygetwindow
+
+# ── Database ──────────────────────
+# sqlite3 → built-in (no install needed)
+
+# ── GUI ───────────────────────────
+# tkinter → built-in (no install needed)
+then follow the folder structure insert the file 
+save it all and the main.py file in AI assistant folder if it is not running then run this command "python main.py" run this command the file will run and give the output 
