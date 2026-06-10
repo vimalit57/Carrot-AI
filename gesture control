@@ -1,0 +1,380 @@
+# ─── vision/gesture_control.py ────────────────────────────
+# Full App Control via Hand Gestures using MediaPipe
+# Say "Carrot gesture mode" to activate
+
+import cv2
+import time
+from config import CAM_INDEX, GESTURE_CONFIDENCE
+
+try:
+    import mediapipe as mp
+    MP_AVAILABLE = True
+except ImportError:
+    MP_AVAILABLE = False
+    print("⚠️  mediapipe not installed. Run: pip install mediapipe")
+
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = False
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
+
+
+# ─────────────────────────────────────────────────────────
+# GESTURE DEFINITIONS
+# ─────────────────────────────────────────────────────────
+
+# finger count → gesture name
+FINGER_GESTURE_MAP = {
+    0: "fist",
+    1: "one_finger",
+    2: "peace",
+    3: "three_fingers",
+    4: "four_fingers",
+    5: "open_hand",
+}
+
+# gesture name → (action_label, description)
+GESTURE_ACTIONS = {
+    "fist":          ("⏯  Pause / Play",      "Media pause or play"),
+    "one_finger":    ("🚀 Open App",           "Open top app from list"),
+    "peace":         ("❌ Close App",           "Close focused app"),
+    "three_fingers": ("🔄 Switch App",          "Switch to next window"),
+    "four_fingers":  ("🌐 Open Browser",        "Open Chrome / Edge"),
+    "open_hand":     ("📸 Screenshot",          "Save screenshot to desktop"),
+    "thumbs_up":     ("🔊 Volume Up",           "Volume +10%"),
+    "thumbs_down":   ("🔇 Volume Down",         "Volume -10%"),
+    "rock_sign":     ("🔒 Lock Screen",         "Lock the PC"),
+    "swipe_up":      ("↑ Scroll Up",            "Scroll page up"),
+    "swipe_down":    ("↓ Scroll Down",          "Scroll page down"),
+}
+
+
+# ─────────────────────────────────────────────────────────
+# FINGER COUNTING
+# ─────────────────────────────────────────────────────────
+
+def count_fingers(hand_landmarks, hand_label: str) -> int:
+    """
+    Count how many fingers are extended.
+    Uses landmark y positions (tip vs pip joint).
+    Thumb uses x axis (mirrored for left/right hand).
+    """
+    tips = [8, 12, 16, 20]   # Index, Middle, Ring, Pinky tips
+    pips = [6, 10, 14, 18]   # PIP joints
+
+    fingers = 0
+
+    # Thumb — use x axis
+    thumb_tip = hand_landmarks.landmark[4]
+    thumb_ip  = hand_landmarks.landmark[3]
+    if hand_label == "Right":
+        if thumb_tip.x < thumb_ip.x:
+            fingers += 1
+    else:
+        if thumb_tip.x > thumb_ip.x:
+            fingers += 1
+
+    # Other 4 fingers — use y axis (lower y = higher on screen = extended)
+    for t, p in zip(tips, pips):
+        if hand_landmarks.landmark[t].y < hand_landmarks.landmark[p].y:
+            fingers += 1
+
+    return fingers
+
+
+def detect_special_gesture(hand_landmarks, hand_label: str) -> str:
+    """
+    Detect special gestures beyond finger count:
+    - thumbs_up: only thumb extended, pointing upward
+    - thumbs_down: only thumb extended, pointing downward
+    - rock_sign: index + pinky only
+    """
+    lm = hand_landmarks.landmark
+
+    # Check each finger tip vs pip
+    index_up  = lm[8].y  < lm[6].y
+    middle_up = lm[12].y < lm[10].y
+    ring_up   = lm[16].y < lm[14].y
+    pinky_up  = lm[20].y < lm[18].y
+    thumb_tip = lm[4]
+    thumb_mcp = lm[2]
+
+    # Thumbs up: only thumb up, pointing upward (tip y < wrist y)
+    if (not index_up and not middle_up and not ring_up and not pinky_up):
+        wrist_y = lm[0].y
+        if thumb_tip.y < wrist_y - 0.05:
+            return "thumbs_up"
+        elif thumb_tip.y > wrist_y + 0.05:
+            return "thumbs_down"
+
+    # Rock sign: index + pinky up, middle + ring down
+    if index_up and pinky_up and not middle_up and not ring_up:
+        return "rock_sign"
+
+    return ""
+
+
+# ─────────────────────────────────────────────────────────
+# SWIPE DETECTION
+# ─────────────────────────────────────────────────────────
+
+class SwipeDetector:
+    """Detects up/down swipe gestures from palm movement."""
+    def __init__(self, threshold=0.08, window=0.5):
+        self.positions = []
+        self.threshold = threshold   # min y movement to count as swipe
+        self.window    = window      # time window in seconds
+
+    def update(self, y: float) -> str:
+        """
+        Feed current hand y position.
+        Returns 'swipe_up', 'swipe_down', or ''.
+        """
+        now = time.time()
+        self.positions.append((now, y))
+        # Keep only last window
+        self.positions = [(t, p) for t, p in self.positions
+                          if now - t < self.window]
+
+        if len(self.positions) < 4:
+            return ""
+
+        oldest_y = self.positions[0][1]
+        newest_y = self.positions[-1][1]
+        delta    = newest_y - oldest_y
+
+        if delta < -self.threshold:   # y decreased = moved UP
+            self.positions.clear()
+            return "swipe_up"
+        elif delta > self.threshold:  # y increased = moved DOWN
+            self.positions.clear()
+            return "swipe_down"
+
+        return ""
+
+
+# ─────────────────────────────────────────────────────────
+# ACTION EXECUTOR
+# ─────────────────────────────────────────────────────────
+
+def execute_gesture_action(gesture: str, app_registry: dict = None):
+    """
+    Execute the system action for a detected gesture.
+    app_registry: optional dict from app_control.scan_all_apps()
+    """
+    import datetime, os
+
+    action_label, _ = GESTURE_ACTIONS.get(gesture, ("Unknown", ""))
+    print(f"✋ Gesture: {gesture} → {action_label}")
+
+    # ── Media controls ──
+    if gesture == "fist":
+        if PYAUTOGUI_AVAILABLE:
+            pyautogui.press("playpause")
+
+    # ── App control ──
+    elif gesture == "one_finger":
+        # Open most recently used / top installed app
+        if app_registry:
+            first_app = list(app_registry.keys())[0]
+            from automation.app_control import open_app
+            open_app(first_app)
+        else:
+            if PYAUTOGUI_AVAILABLE:
+                pyautogui.hotkey("win", "1")   # Open taskbar app #1
+
+    elif gesture == "peace":
+        # Close the currently focused window
+        if PYAUTOGUI_AVAILABLE:
+            pyautogui.hotkey("alt", "F4")
+
+    elif gesture == "three_fingers":
+        # Switch to next open window (Alt+Tab)
+        if PYAUTOGUI_AVAILABLE:
+            pyautogui.hotkey("alt", "tab")
+
+    elif gesture == "four_fingers":
+        # Open browser
+        from automation.app_control import open_app
+        result = open_app("chrome")
+        if "couldn't find" in result.lower():
+            open_app("edge")
+
+    # ── Screenshots ──
+    elif gesture == "open_hand":
+        if PYAUTOGUI_AVAILABLE:
+            ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(os.path.expanduser("~"), "Desktop",
+                                f"carrot_snap_{ts}.png")
+            pyautogui.screenshot(path)
+            print(f"📸 Screenshot saved: {path}")
+
+    # ── Volume ──
+    elif gesture == "thumbs_up":
+        if PYAUTOGUI_AVAILABLE:
+            for _ in range(2):
+                pyautogui.press("volumeup")
+
+    elif gesture == "thumbs_down":
+        if PYAUTOGUI_AVAILABLE:
+            for _ in range(2):
+                pyautogui.press("volumedown")
+
+    # ── Lock screen ──
+    elif gesture == "rock_sign":
+        import subprocess, platform
+        OS = platform.system()
+        if OS == "Windows":
+            subprocess.call(["rundll32.exe", "user32.dll,LockWorkStation"])
+        elif OS == "Linux":
+            subprocess.call(["gnome-screensaver-command", "-l"])
+        elif OS == "Darwin":
+            subprocess.call([
+                "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
+                "-suspend"
+            ])
+
+    # ── Scroll ──
+    elif gesture == "swipe_up":
+        if PYAUTOGUI_AVAILABLE:
+            pyautogui.scroll(5)
+
+    elif gesture == "swipe_down":
+        if PYAUTOGUI_AVAILABLE:
+            pyautogui.scroll(-5)
+
+
+# ─────────────────────────────────────────────────────────
+# MAIN GESTURE CONTROL LOOP
+# ─────────────────────────────────────────────────────────
+
+def start_gesture_control(app_registry: dict = None):
+    """
+    Open webcam and run real-time gesture detection.
+    - Detects finger count, special gestures, and swipes
+    - Executes app/system actions with cooldown
+    - Shows live gesture label on screen
+    - Press Q to quit
+
+    app_registry: pass from app_control._get_registry()
+                  for gesture-based app launching
+    """
+    if not MP_AVAILABLE:
+        print("mediapipe not installed. Run: pip install mediapipe")
+        return
+
+    mp_hands   = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
+    mp_styles  = mp.solutions.drawing_styles
+
+    hands = mp_hands.Hands(
+        max_num_hands=1,
+        min_detection_confidence=GESTURE_CONFIDENCE,
+        min_tracking_confidence=GESTURE_CONFIDENCE
+    )
+
+    cap = cv2.VideoCapture(CAM_INDEX)
+    if not cap.isOpened():
+        print("❌ Could not open webcam.")
+        return
+
+    print("✋ CARROT Gesture Control Active!")
+    print("   Gesture map:")
+    for g, (label, desc) in GESTURE_ACTIONS.items():
+        print(f"   {label:25s} → {desc}")
+    print("   Press Q to quit gesture mode.\n")
+
+    swipe_detector   = SwipeDetector()
+    last_gesture     = ""
+    gesture_cooldown = 0
+    COOLDOWN_FRAMES  = 45   # ~1.5 sec at 30fps
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame  = cv2.flip(frame, 1)
+        h, w   = frame.shape[:2]
+        rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = hands.process(rgb)
+
+        gesture_label = "No hand detected"
+        current_gesture = ""
+
+        if result.multi_hand_landmarks and result.multi_handedness:
+            for hand_lm, hand_info in zip(
+                    result.multi_hand_landmarks,
+                    result.multi_handedness):
+
+                label = hand_info.classification[0].label
+
+                # ── Draw hand skeleton ──
+                mp_drawing.draw_landmarks(
+                    frame, hand_lm,
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_styles.get_default_hand_landmarks_style(),
+                    mp_styles.get_default_hand_connection_style()
+                )
+
+                # ── Detect special gestures first ──
+                special = detect_special_gesture(hand_lm, label)
+
+                if special:
+                    current_gesture = special
+                else:
+                    # Count fingers
+                    fingers = count_fingers(hand_lm, label)
+                    current_gesture = FINGER_GESTURE_MAP.get(fingers, "unknown")
+
+                # ── Check for swipe ──
+                palm_y = hand_lm.landmark[0].y
+                swipe  = swipe_detector.update(palm_y)
+                if swipe:
+                    current_gesture = swipe
+
+                action_label, _ = GESTURE_ACTIONS.get(
+                    current_gesture, ("Unknown gesture", ""))
+                gesture_label = f"{current_gesture}  →  {action_label}"
+
+                # ── Execute with cooldown ──
+                if (current_gesture != last_gesture or
+                        gesture_cooldown <= 0) and current_gesture:
+                    if gesture_cooldown <= 0:
+                        execute_gesture_action(current_gesture, app_registry)
+                        last_gesture    = current_gesture
+                        gesture_cooldown = COOLDOWN_FRAMES
+
+        gesture_cooldown = max(0, gesture_cooldown - 1)
+
+        # ── HUD overlay ──
+        # Semi-transparent bar at top
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (w, 80), (10, 10, 30), -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        # Gesture label
+        cv2.putText(frame, gesture_label, (14, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 100, 200), 2)
+
+        # Cooldown bar
+        if gesture_cooldown > 0:
+            bar_w = int((gesture_cooldown / COOLDOWN_FRAMES) * (w - 28))
+            cv2.rectangle(frame, (14, 55), (14 + bar_w, 68),
+                          (255, 100, 200), -1)
+
+        # Quit hint
+        cv2.putText(frame, "Press Q to quit gesture mode", (14, h - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+
+        cv2.imshow("CARROT Gesture Control", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    hands.close()
+    print("✋ Gesture control stopped.")
