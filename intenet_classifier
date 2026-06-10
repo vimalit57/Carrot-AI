@@ -1,0 +1,116 @@
+# ─── ai/intent_classifier.py ──────────────────────────────
+
+INTENTS = {
+    "open_app": [
+        "open", "launch", "start", "run", "execute"
+    ],
+    "close_app": [
+        "close", "exit", "quit", "kill", "terminate", "shut"
+    ],
+    "switch_app": [
+        "switch to", "go to app", "bring up", "focus on"
+    ],
+    "list_apps": [
+        "list apps", "what apps", "show apps", "installed apps",
+        "what is installed", "show installed"
+    ],
+    "rescan_apps": [
+        "rescan apps", "refresh apps", "scan system", "update app list",
+        "find new apps"
+    ],
+    "search_web": [
+        "search", "google", "look up", "find", "browse",
+        "what is", "who is", "tell me about", "search for"
+    ],
+    "open_url": [
+        "go to", "open website", "visit", "navigate to", "open url"
+    ],
+    "play_music": [
+        "play music", "play song", "play", "music on youtube"
+    ],
+    "take_screenshot": [
+        "screenshot", "capture screen", "take a screenshot"
+    ],
+    "system_volume": [
+        "volume up", "volume down", "mute", "unmute",
+        "increase volume", "decrease volume"
+    ],
+    "system_shutdown": [
+        "shutdown", "shut down", "power off", "restart", "reboot"
+    ],
+    "lock_screen": [
+        "lock", "lock screen", "lock pc", "lock computer"
+    ],
+    "tell_time": [
+        "what time", "current time", "tell me the time", "time now"
+    ],
+    "tell_date": [
+        "what date", "today's date", "current date", "what day"
+    ],
+    "face_recognition": [
+        "who is this", "recognize face", "identify person",
+        "face scan", "who am i looking at"
+    ],
+    "gesture_control": [
+        "gesture mode", "hand control", "gesture", "use hand"
+    ],
+    "remember": [
+        "remember", "save this", "note this", "don't forget", "make a note"
+    ],
+    "recall": [
+        "recall", "what did i say", "what do you remember", "retrieve",
+        "show my notes"
+    ],
+    "clear_memory": [
+        "clear memory", "forget everything", "reset memory"
+    ],
+    "stop": [
+        "stop", "bye", "goodbye", "exit jarvis", "quit jarvis", "sleep"
+    ],
+    "greet": [
+        "hello", "hi", "hey", "good morning", "good evening",
+        "good afternoon", "howdy"
+    ],
+}
+
+
+def classify_intent(text: str) -> tuple:
+    text_lower = text.lower().strip()
+    for intent, keywords in INTENTS.items():
+        for kw in keywords:
+            if kw in text_lower:
+                return intent, text_lower
+    return "gpt_query", text_lower
+
+
+def extract_app_name(text: str) -> str:
+    triggers = [
+        "open", "launch", "start", "run", "close", "exit",
+        "quit", "kill", "terminate", "switch to", "bring up",
+        "focus on", "execute"
+    ]
+    for t in sorted(triggers, key=len, reverse=True):
+        if t in text:
+            parts = text.split(t, 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+    return text.strip()
+
+
+def extract_search_query(text: str) -> str:
+    remove = [
+        "search", "google", "look up", "find",
+        "tell me about", "search for", "what is", "who is"
+    ]
+    for r in remove:
+        text = text.replace(r, "")
+    return text.strip()
+
+
+def extract_url(text: str) -> str:
+    remove = ["go to", "open website", "visit", "navigate to", "open url"]
+    for r in remove:
+        text = text.replace(r, "").strip()
+    if not text.startswith("http"):
+        text = "https://" + text
+    return text.strip()
